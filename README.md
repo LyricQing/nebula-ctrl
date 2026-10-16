@@ -36,7 +36,13 @@ python -m http.server 8000
 
 推送到 `master` 会自动触发 GitHub Actions：先跑 `node tools/verify.mjs`，通过后把 `index.html` 同步进 `dist/` 并发布到 Cloudflare Pages，几十秒后 `https://nebula-ctrl.pages.dev` 就是最新版本。运行记录在仓库的 Actions 页面；也可以在 Actions → deploy → Run workflow 手动触发。
 
-这条流水线需要一个仓库密钥 `CLOUDFLARE_API_TOKEN`（Settings → Secrets and variables → Actions），令牌权限只需要一条：**Account → Cloudflare Pages → Edit**。缺密钥时流水线会在部署前直接报错退出，不会静默发布旧内容。PR 只跑校验、不部署。
+这条流水线需要一个仓库密钥 `CLOUDFLARE_API_TOKEN`（Settings → Secrets and variables → Actions）。令牌创建的三个要点，少一个都会让部署失败：
+
+- 权限只加一条：**Account → Cloudflare Pages → Edit**，不要漏掉 Account Resources 里的账号选择（漏了会在 `/accounts` 返回空列表，接口统一报 401 Authentication error）。
+- **不要开启 Client IP Address Filtering**：GitHub Actions 跑在云机房 IP 上，白名单永远对不上，错误表现为 `9109: Cannot use the access token from location`。
+- 有效期的取舍：不过期最省事，但它等同于「可改写你站点」的凭据，泄露就去后台吊销重建。
+
+缺密钥时流水线会在部署前直接报错退出，不会静默发布旧内容。PR 只跑校验、不部署；项目的生产分支是 `master`，所以推 master 是生产发布，推其它分支会得到预览链接。
 
 ### 本地手动部署（回退路径）
 

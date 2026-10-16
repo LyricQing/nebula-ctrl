@@ -1,0 +1,61 @@
+name: deploy
+
+# 推送到 master → 校验通过后自动发布到现有的 Cloudflare Pages 项目（nebula-ctrl.pages.dev）
+# PR 只跑校验，不部署；也可以在上面的 Actions 页面手动触发一次。
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一分支不并发部署，避免两次上传互相覆盖
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: 逻辑校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: 运行 index.html 回归校验
+        run: node tools/verify.mjs
+
+  deploy:
+    name: 发布到 Cloudflare Pages
+    needs: verify
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # 根目录 index.html 是唯一源，部署前同步进部署目录，避免两边漂移
+      - name: 同步 index.html 到 dist/
+        run: cp index.html dist/index.html
+
+      - name: 检查密钥是否配置
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::缺少仓库密钥 CLOUDFLARE_API_TOKEN。请在 Settings → Secrets and variables → Actions 中配置一个权限为 Account → Cloudflare Pages → Edit 的 API 令牌。"
+            exit 1
+          fi
+
+      - name: 发布到 Cloudflare Pages
+        env:
+          # 令牌来自仓库密钥；账号 ID 不是凭据，直接写明文，少配一个密钥
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 0e0d6267b37224ea946d63994947a5c1
+        run: npx --yes wrangler@4.151.1 pages deploy dist --project-name nebula-ctrl --commit-dirty=true

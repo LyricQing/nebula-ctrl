@@ -27,15 +27,25 @@ python -m http.server 8000
 
 - `index.html` — 全部源码（CSS/JS 内联，无构建步骤）
 - `dist/` — 部署产物：`index.html` 加同域的 `hand_landmarker.task`
+- `tools/verify.mjs` — 回归校验（形态生成、手势分类、着色器 uniform 一致性等 35 项断言）
+- `.github/workflows/deploy.yml` — 推送到 `master` 后自动校验并发布
 
 ## 部署
+
+### 推代码即上线（主路径）
+
+推送到 `master` 会自动触发 GitHub Actions：先跑 `node tools/verify.mjs`，通过后把 `index.html` 同步进 `dist/` 并发布到 Cloudflare Pages，几十秒后 `https://nebula-ctrl.pages.dev` 就是最新版本。运行记录在仓库的 Actions 页面；也可以在 Actions → deploy → Run workflow 手动触发。
+
+这条流水线需要一个仓库密钥 `CLOUDFLARE_API_TOKEN`（Settings → Secrets and variables → Actions），令牌权限只需要一条：**Account → Cloudflare Pages → Edit**。缺密钥时流水线会在部署前直接报错退出，不会静默发布旧内容。PR 只跑校验、不部署。
+
+### 本地手动部署（回退路径）
 
 ```
 Copy-Item index.html dist\index.html -Force
 npx wrangler pages deploy dist --project-name nebula-ctrl
 ```
 
-`wrangler.jsonc` 已把资源目录锁定为 `./dist`。**不要**把仓库根目录当作部署目录，否则会连同 `.git/` 一起发布出去。
+注意：`dist/index.html` 是部署产物，由 CI（或上面这条复制命令）从根目录的 `index.html` 同步；改页面请改根目录那份。`wrangler.jsonc` 把资源目录锁定为 `./dist`，**不要**把仓库根目录当作部署目录，否则会连同 `.git/` 一起发布出去。
 
 ## 中国大陆访问
 

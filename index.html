@@ -1,0 +1,1419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>NEBULA CTRL · 手势驱动 3D 粒子系统</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='none' stroke='%235ff0ff' stroke-width='3'/><circle cx='16' cy='16' r='4.5' fill='%23a06bff'/></svg>" />
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.3/dist/index.global.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+<style>
+  /* ---- 基础与关键布局兜底（Tailwind 失效时页面仍可用）---- */
+  html, body { height: 100%; }
+  body {
+    margin: 0; overflow: hidden;
+    background: #03030a; color: #cfe9ff;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  #gl { position: fixed; inset: 0; display: block; }
+  #hud { position: fixed; inset: 0; pointer-events: none; transition: opacity .35s ease; }
+  #panel { position: absolute; top: 16px; left: 16px; }
+  #camWrap { position: absolute; right: 16px; bottom: 16px; }
+  #legend { position: absolute; left: 16px; bottom: 16px; }
+  #overlay { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(3,3,10,.88); }
+  #errorCard { position: fixed; z-index: 40; display: none; left: 50%; transform: translateX(-50%); bottom: 96px; }
+  #demoTag { display: none; }
+
+  /* ---- 视觉装饰 ---- */
+  .glass {
+    background: linear-gradient(180deg, rgba(9,15,30,.74), rgba(4,8,18,.58));
+    border: 1px solid rgba(95,240,255,.22);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+    box-shadow: 0 0 30px rgba(0,180,255,.10), inset 0 0 24px rgba(0,120,200,.06);
+  }
+  .neon {
+    color: #eafcff; letter-spacing: .10em;
+    text-shadow: 0 0 8px rgba(95,240,255,.75), 0 0 22px rgba(95,240,255,.35);
+  }
+  .label { font-size: 10px; letter-spacing: .22em; text-transform: uppercase; color: #6d8fae; }
+  .bar { height: 4px; background: rgba(255,255,255,.09); border-radius: 999px; overflow: hidden; }
+  .bar > i {
+    display: block; height: 100%; width: 0%;
+    background: linear-gradient(90deg, #5ff0ff, #a06bff);
+    box-shadow: 0 0 10px rgba(95,240,255,.8);
+    transition: width .08s linear;
+  }
+  #vignette {
+    position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0) 38%, rgba(0,0,0,.55) 78%, rgba(0,0,0,.92) 100%);
+  }
+  #scanlines {
+    position: fixed; inset: 0; pointer-events: none; opacity: .15; mix-blend-mode: overlay;
+    background: repeating-linear-gradient(to bottom, rgba(255,255,255,.10) 0 1px, rgba(0,0,0,0) 1px 3px);
+  }
+  #flash { position: fixed; inset: 0; pointer-events: none; background: #dff8ff; opacity: 0; mix-blend-mode: screen; }
+  #cam, #camOverlay { transform: scaleX(-1); }
+  .kbd {
+    border: 1px solid rgba(95,240,255,.35); border-radius: 4px; padding: 0 5px;
+    font-size: 10px; color: #9fe9ff; background: rgba(95,240,255,.08);
+  }
+  .hud-off { opacity: 0 !important; pointer-events: none !important; }
+  #legendBody { display: grid; grid-template-columns: 62px 1fr; gap: 4px 8px; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="vignette"></div>
+<div id="scanlines"></div>
+<div id="flash"></div>
+
+<div id="hud" class="text-[11px]">
+
+  <!-- 左上：实时参数面板 -->
+  <div id="panel" class="glass w-[302px] rounded-xl p-4 pointer-events-auto">
+    <div class="neon text-[15px] font-semibold">NEBULA CTRL</div>
+    <div class="label mt-1">手势驱动 3D 粒子系统</div>
+
+    <div class="mt-3 space-y-2">
+      <div class="flex items-center justify-between gap-2">
+        <span class="label">形态 SHAPE</span><span id="shapeName" class="text-[#eafcff]">星云球壳</span>
+      </div>
+      <div class="flex items-start justify-between gap-2">
+        <span class="label pt-[3px]">手势 GESTURE</span><span id="gestureName" class="text-right text-[#5ff0ff]">摄像头未启用</span>
+      </div>
+      <div class="flex items-center justify-between gap-2">
+        <span class="label">手数 / 粒子</span><span id="statsLine" class="text-[#eafcff]">0 / 22000</span>
+      </div>
+      <div class="flex items-center justify-between gap-2">
+        <span class="label">主题 THEME</span><span id="themeName" class="text-[#eafcff]">霓虹青紫</span>
+      </div>
+      <div class="flex items-center justify-between gap-2">
+        <span class="label">FPS / 画质</span><span id="fps" class="text-[#eafcff]">-- / 高</span>
+      </div>
+    </div>
+
+    <div class="mt-4 space-y-2">
+      <div>
+        <div class="flex justify-between text-[10px] text-[#6d8fae]"><span>扩散 SPREAD</span><span id="vSpread">1.00</span></div>
+        <div class="bar mt-1"><i id="barSpread"></i></div>
+      </div>
+      <div>
+        <div class="flex justify-between text-[10px] text-[#6d8fae]"><span>涡旋 SWIRL</span><span id="vSwirl">0.12</span></div>
+        <div class="bar mt-1"><i id="barSwirl"></i></div>
+      </div>
+      <div>
+        <div class="flex justify-between text-[10px] text-[#6d8fae]"><span>缩放 ZOOM</span><span id="vZoom">1.00</span></div>
+        <div class="bar mt-1"><i id="barZoom"></i></div>
+      </div>
+      <div>
+        <div class="flex justify-between text-[10px] text-[#6d8fae]"><span>冲击 SHOCK</span><span id="vShock">0.00</span></div>
+        <div class="bar mt-1"><i id="barShock"></i></div>
+      </div>
+    </div>
+
+    <div id="demoTag" class="mt-3 text-[10px] text-[#a06bff]">● 自动演示中（检测到手部即退出）</div>
+  </div>
+
+  <!-- 右下：镜像摄像头预览 + 骨架 -->
+  <div id="camWrap" class="glass w-[244px] rounded-xl p-2">
+    <div class="relative w-full aspect-[4/3] overflow-hidden rounded-lg bg-black/70">
+      <video id="cam" class="absolute inset-0 h-full w-full object-cover" playsinline muted autoplay></video>
+      <canvas id="camOverlay" class="absolute inset-0 h-full w-full"></canvas>
+      <div id="camHint" class="absolute inset-0 grid place-items-center px-3 text-center text-[10px] leading-relaxed text-[#6d8fae]">
+        摄像头未启用<br />点击「启用手势控制」
+      </div>
+    </div>
+    <div class="mt-2 flex items-center justify-between gap-2 text-[10px]">
+      <span id="gestureBadge" class="truncate text-[#5ff0ff]">—</span>
+      <span class="shrink-0 text-[#6d8fae]">镜像预览</span>
+    </div>
+  </div>
+
+  <!-- 左下：手势图例与快捷键 -->
+  <div id="legend" class="glass w-[330px] rounded-xl p-3 pointer-events-auto">
+    <button id="legendToggle" class="label w-full cursor-pointer text-left">手势图例 ▾</button>
+    <div id="legendBody" class="mt-2"></div>
+    <div class="mt-2 border-t border-white/10 pt-2 text-[10px] leading-relaxed text-[#6d8fae]">
+      <span class="kbd">1-5</span> 形态
+      <span class="kbd">G</span> 辉光
+      <span class="kbd">T</span> 拖影
+      <span class="kbd">H</span> HUD
+      <span class="kbd">C</span> 摄像头
+      <span class="kbd">空格</span> 演示
+      <span class="kbd">R</span> 重置
+    </div>
+  </div>
+</div>
+
+<!-- 启动遮罩 -->
+<div id="overlay" class="bg-[#03030a]/88 backdrop-blur-sm">
+  <div class="glass w-[452px] max-w-[92vw] rounded-2xl p-7 text-center">
+    <div class="neon text-xl font-semibold">NEBULA CTRL</div>
+    <div class="label mt-2">单手 × 双手 混合手势 · 22,000 粒子</div>
+    <p class="mt-4 text-[12px] leading-relaxed text-[#9fb8cf]">
+      手势识别需要摄像头权限。所有画面只在本地浏览器内处理，不会上传到任何服务器。
+    </p>
+    <div class="mt-6 flex flex-col gap-2">
+      <button id="btnEnable" class="cursor-pointer rounded-lg border border-[#5ff0ff]/50 bg-[#5ff0ff]/15 py-2.5 text-[12px] text-[#eafcff] hover:bg-[#5ff0ff]/25">
+        启用手势控制
+      </button>
+      <button id="btnSkip" class="cursor-pointer rounded-lg border border-white/15 py-2.5 text-[12px] text-[#9fb8cf] hover:bg-white/5">
+        跳过，用鼠标体验
+      </button>
+    </div>
+    <div id="bootStatus" class="mt-4 text-[10px] text-[#6d8fae]">正在加载资源…</div>
+  </div>
+</div>
+
+<!-- 错误卡 -->
+<div id="errorCard" class="glass w-[440px] max-w-[92vw] rounded-xl p-4">
+  <div class="text-[12px] font-semibold text-[#ffb4b4]">出现问题</div>
+  <p id="errorText" class="mt-1 text-[11px] leading-relaxed text-[#9fb8cf]"></p>
+  <div class="mt-3 flex gap-2">
+    <button id="btnErrorMouse" class="cursor-pointer rounded border border-[#5ff0ff]/40 px-3 py-1.5 text-[11px] text-[#9fe9ff] hover:bg-[#5ff0ff]/10">用鼠标体验</button>
+    <button id="btnRetry" class="cursor-pointer rounded border border-white/15 px-3 py-1.5 text-[11px] text-[#9fb8cf] hover:bg-white/5">重试摄像头</button>
+    <button id="btnCloseErr" class="ml-auto cursor-pointer rounded border border-white/15 px-3 py-1.5 text-[11px] text-[#9fb8cf] hover:bg-white/5">关闭</button>
+  </div>
+</div>
+
+<script type="module">
+/* =========================================================================
+   NEBULA CTRL — 手势驱动 3D 粒子系统（单文件原型）
+   单手 7 类手势 + 双手 5 类手势，Three.js r186 + MediaPipe tasks-vision 1.1.1
+   ========================================================================= */
+
+let THREE, OrbitControls, EffectComposer, RenderPass, UnrealBloomPass, AfterimagePass, OutputPass;
+
+/* ------------------------------ 配置常量 ------------------------------ */
+const CFG = {
+  COUNT: 22000,
+  COUNT_LOW: 15000,
+  STARDUST: 3000,
+  DPR_MAX: 2,
+  FOG_DENSITY: 0.0022,      // FogExp2 微弱雾（与 three 的 exp2 公式一致）
+  BG: 0x03030a,
+  MORPH_S: 1.2,             // 形态过渡时长
+  MORPH_INTRO_S: 2.2,       // 开场汇聚时长
+  CONFIRM_MS: 120,          // 手势确认 / 释放时间
+  GAMMA: 2.2,
+  SPREAD_OPEN: 1.6,
+  SPREAD_FIST: 0.35,
+  FORCE_RADIUS: 26,
+  REPEL: 34,
+  ATTRACT: 30,
+  PINCH_SCALE: 0.4,
+  BLOOM: { strength: 0.95, radius: 0.60, threshold: 0.26 },
+  AFTERIMAGE: 0.92,
+  DEMO_DELAY_MS: 6000,
+  DEMO_SHAPE_MS: 8000,
+  MANUAL_HOLD_MS: 25000,    // 手动操作后暂停自动演示，避免覆盖用户选择
+  CAM_W: 640, CAM_H: 480,
+  // 同域 hand_landmarker.task 优先（部署时一并上传）：Google 存储在中国大陆不可达，
+  // 单文件直接打开或未部署同域副本时自动回退到官方地址。
+  MODEL_LOCAL: './hand_landmarker.task',
+  MODEL_URL: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+  // 依次尝试：jsDelivr → 淘宝 npmmirror（中国大陆可达）
+  VISION_URLS: [
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/vision_bundle.mjs',
+    'https://registry.npmmirror.com/@mediapipe/tasks-vision/1.1.1/files/vision_bundle.mjs',
+  ],
+  WASM_ROOTS: [
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/wasm',
+    'https://registry.npmmirror.com/@mediapipe/tasks-vision/1.1.1/files/wasm',
+  ],
+};
+
+const THEMES = [
+  { name: '霓虹青紫', hueA: 186, hueB: 288, sat: 0.95, light: 0.56, spread: 26, flow: 0.35, intensity: 1.15, bloom: 0.95, fog: 0x050818 },
+  { name: '冷暖对冲', hueA: 178, hueB: 336, sat: 1.00, light: 0.55, spread: 30, flow: 0.55, intensity: 1.20, bloom: 1.05, fog: 0x0b0413 },
+  { name: '灼热熔核', hueA: 12,  hueB: 268, sat: 0.98, light: 0.54, spread: 26, flow: 0.42, intensity: 1.25, bloom: 1.10, fog: 0x12060a },
+];
+
+const SHAPES = [
+  { name: '星云球壳', gen: shapeNebula,  swirl: 0.9,  size: 1.00 },
+  { name: '旋涡星系盘', gen: shapeGalaxy, swirl: 1.5, size: 0.95 },
+  { name: '环面结',   gen: shapeKnot,    swirl: 0.7,  size: 1.00 },
+  { name: '龙卷漏斗',  gen: shapeTornado, swirl: 2.0, size: 0.95 },
+  { name: '心跳脉冲',  gen: shapeHeart,   swirl: 0.35, size: 1.05 },
+];
+
+const LEGEND = [
+  ['张掌', '粒子扩散 1→1.6×，辉光增强'],
+  ['握拳', '坍缩为致密高亮核心'],
+  ['捏合', '拇指食指捏合 → 系统缩放至 0.6×'],
+  ['指向', '指尖喷射粒子流 / 定向吸引'],
+  ['胜利', '循环切换 3 套配色主题'],
+  ['掌位', '掌心左右上下 → 云团 yaw / pitch'],
+  ['掌面旋转', '手背倾角 → 云团 roll'],
+  ['双手距离', '双掌靠近放大 / 拉开缩小'],
+  ['双掌涡旋', '双手绕连线旋转 → 加强涡旋'],
+  ['合击', '双掌快速合拢 → 冲击波'],
+  ['一握一张', '拳头吸引 / 张掌排斥'],
+  ['分层托举', '双手高低差 → 沿 Y 轴分层拉伸'],
+];
+
+const HAND_CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
+  [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17],
+];
+
+/* ------------------------------ 小工具 ------------------------------ */
+const $ = (id) => document.getElementById(id);
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const smooth = (cur, target, dt, tau) => cur + (target - cur) * (1 - Math.exp(-dt / tau));
+const remap = (v, a, b, c, d) => c + (clamp(v, a, b) - a) / (b - a) * (d - c);
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const gaussOf = (rng) => (rng() + rng() + rng() + rng() - 2) * 0.5;
+
+/* One-Euro 滤波：掌位 / 旋转 / 捏合量去抖 */
+class OneEuro {
+  constructor(minCutoff = 1.0, beta = 0.007, dCutoff = 1.0) {
+    this.mc = minCutoff; this.beta = beta; this.dc = dCutoff;
+    this.x = null; this.dx = 0; this.t = null;
+  }
+  _alpha(cutoff, dt) { const tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); }
+  filter(v, tSec) {
+    if (!Number.isFinite(v)) return this.x === null ? 0 : this.x;
+    if (this.x === null) { this.x = v; this.t = tSec; this.dx = 0; return v; }
+    let dt = tSec - this.t;
+    if (!(dt > 0)) dt = 1 / 60;
+    this.t = tSec;
+    const dxRaw = (v - this.x) / dt;
+    const ad = this._alpha(this.dc, dt);
+    this.dx = ad * dxRaw + (1 - ad) * this.dx;
+    const a = this._alpha(this.mc + this.beta * Math.abs(this.dx), dt);
+    this.x = a * v + (1 - a) * this.x;
+    return this.x;
+  }
+  reset() { this.x = null; this.dx = 0; this.t = null; }
+}
+
+/* ------------------------------ 形态生成 ------------------------------ */
+function shapeScatter(n, rng) {
+  const a = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const th = rng() * Math.PI * 2, ph = Math.acos(2 * rng() - 1), r = 120 + rng() * 70;
+    a[i * 3] = Math.sin(ph) * Math.cos(th) * r;
+    a[i * 3 + 1] = Math.cos(ph) * r;
+    a[i * 3 + 2] = Math.sin(ph) * Math.sin(th) * r;
+  }
+  return a;
+}
+
+function shapeNebula(n, rng) {
+  const a = new Float32Array(n * 3);
+  const clusters = [];
+  for (let c = 0; c < 3; c++) {
+    const th = rng() * Math.PI * 2, ph = Math.acos(2 * rng() - 1), rr = 16 + rng() * 14;
+    clusters.push([Math.sin(ph) * Math.cos(th) * rr, Math.cos(ph) * rr * 0.7, Math.sin(ph) * Math.sin(th) * rr]);
+  }
+  for (let i = 0; i < n; i++) {
+    let x, y, z;
+    if (rng() < 0.74) {
+      const th = rng() * Math.PI * 2, ph = Math.acos(2 * rng() - 1), r = 38 * (0.86 + 0.16 * rng());
+      x = Math.sin(ph) * Math.cos(th) * r; y = Math.cos(ph) * r; z = Math.sin(ph) * Math.sin(th) * r;
+    } else {
+      const c = clusters[i % 3];
+      x = c[0] + gaussOf(rng) * 18; y = c[1] + gaussOf(rng) * 18; z = c[2] + gaussOf(rng) * 18;
+    }
+    a[i * 3] = x; a[i * 3 + 1] = y; a[i * 3 + 2] = z;
+  }
+  return a;
+}
+
+function shapeGalaxy(n, rng) {
+  const a = new Float32Array(n * 3);
+  const arms = 3;
+  for (let i = 0; i < n; i++) {
+    const arm = i % arms;
+    const rr = 5 + 46 * Math.pow(rng(), 0.7);
+    const spread = 0.16 + 0.5 / (1 + rr * 0.12);
+    const ang = arm * (Math.PI * 2 / arms) + rr * 0.13 + gaussOf(rng) * spread;
+    a[i * 3] = Math.cos(ang) * rr;
+    a[i * 3 + 1] = gaussOf(rng) * (9 * Math.exp(-rr / 26) + 1.3);
+    a[i * 3 + 2] = Math.sin(ang) * rr;
+  }
+  return a;
+}
+
+function shapeKnot(n, rng) {
+  const a = new Float32Array(n * 3);
+  const p = 2, q = 3, S = 11;
+  for (let i = 0; i < n; i++) {
+    const u = rng() * Math.PI * 2;
+    const rr = 2 + Math.cos(q * u);
+    let x = rr * Math.cos(p * u) * S, y = Math.sin(q * u) * S * 0.9, z = rr * Math.sin(p * u) * S;
+    const th = rng() * Math.PI * 2, ph = Math.acos(2 * rng() - 1), rad = 1.5 + 2.0 * Math.pow(rng(), 2);
+    x += Math.sin(ph) * Math.cos(th) * rad; y += Math.cos(ph) * rad; z += Math.sin(ph) * Math.sin(th) * rad;
+    a[i * 3] = x; a[i * 3 + 1] = y; a[i * 3 + 2] = z;
+  }
+  return a;
+}
+
+function shapeTornado(n, rng) {
+  const a = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const h = rng() * 2 - 1;
+    const t = (h + 1) * 0.5;
+    const r = (4 + 42 * Math.pow(t, 1.25)) * (0.86 + 0.26 * rng());
+    const ang = rng() * Math.PI * 2 + t * 7.0;
+    a[i * 3] = Math.cos(ang) * r;
+    a[i * 3 + 1] = h * 48;
+    a[i * 3 + 2] = Math.sin(ang) * r;
+  }
+  return a;
+}
+
+function shapeHeart(n, rng) {
+  const a = new Float32Array(n * 3);
+  const S = 1.55;
+  for (let i = 0; i < n; i++) {
+    const t = rng() * Math.PI * 2;
+    const x = 16 * Math.pow(Math.sin(t), 3);
+    const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+    const shell = 0.72 + 0.35 * Math.pow(rng(), 0.6);
+    a[i * 3] = x * S * shell;
+    a[i * 3 + 1] = y * S * shell + 2;
+    a[i * 3 + 2] = gaussOf(rng) * 9 * (1 - Math.abs(x) / 22) + gaussOf(rng) * 1.4;
+  }
+  return a;
+}
+
+/* ------------------------------ 着色器 ------------------------------ */
+const VERT = `
+precision highp float;
+
+attribute vec3  aTarget;
+attribute float aSeed;
+attribute float aSize;
+attribute float aHueOffset;
+attribute float aPhase;
+
+uniform float uTime;
+uniform float uMorph;
+uniform float uSpread;
+uniform float uSwirl;
+uniform float uShock;
+uniform float uShockRadius;
+uniform float uLayerY;
+uniform float uHeart;
+uniform float uSizeScale;
+uniform float uPixelRatio;
+uniform float uIntensity;
+uniform float uGamma;
+uniform float uHueA;
+uniform float uHueB;
+uniform float uHueSpread;
+uniform float uFlow;
+uniform float uSat;
+uniform float uLight;
+uniform float uFogDensity;
+uniform vec3  uFogColor;
+uniform vec3  uHandPos0;
+uniform vec3  uHandPos1;
+uniform float uHandStrength0;
+uniform float uHandStrength1;
+uniform float uHandRadius0;
+uniform float uHandRadius1;
+uniform vec3  uPointOrigin;
+uniform vec3  uPointDir;
+uniform float uPointPower;
+
+varying vec3  vColor;
+varying float vFogDepth;
+
+vec3 hsl2rgb(vec3 c) {
+  vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+  return c.z + c.y * (rgb - 0.5) * (1.0 - abs(2.0 * c.z - 1.0));
+}
+
+void main() {
+  /* --- 形态插值（easeInOutCubic）+ 中段爆散弧 --- */
+  float t = clamp(uMorph, 0.0, 1.0);
+  float e = t < 0.5 ? 4.0 * t * t * t : 1.0 - pow(-2.0 * t + 2.0, 3.0) * 0.5;
+  vec3 p = mix(position, aTarget, e);
+  p += normalize(p + vec3(0.0001)) * sin(3.14159265 * e) * (12.0 + 30.0 * aSeed);
+
+  /* --- 呼吸起伏 --- */
+  p *= 1.0 + 0.035 * sin(uTime * (0.6 + aSeed) + aPhase * 6.2831);
+
+  /* --- 涡旋（内快外慢的差分旋转）--- */
+  float r = length(p.xz);
+  float ang = uTime * 0.05 + uSwirl * (1.5 + aSeed * 0.7) / (1.0 + r * 0.05);
+  float ca = cos(ang), sa = sin(ang);
+  p.xz = mat2(ca, sa, -sa, ca) * p.xz;
+
+  /* --- 分层托举 / 心跳 / 张掌握拳 --- */
+  p.y *= 1.0 + uLayerY * 2.0;
+  p *= 1.0 + uHeart * 0.09;
+  p *= uSpread;
+
+  /* --- 手部力场（局部空间，随云团一起旋转）--- */
+  vec3 d0 = p - uHandPos0;
+  float i0 = uHandStrength0 * exp(-pow(length(d0) / max(uHandRadius0, 0.001), 2.0));
+  p += normalize(d0 + vec3(0.0001)) * i0;
+
+  vec3 d1 = p - uHandPos1;
+  float i1 = uHandStrength1 * exp(-pow(length(d1) / max(uHandRadius1, 0.001), 2.0));
+  p += normalize(d1 + vec3(0.0001)) * i1;
+
+  /* --- 指向喷射 --- */
+  vec3 dP = p - uPointOrigin;
+  float iP = uPointPower * exp(-pow(length(dP) / 22.0, 2.0));
+  p += normalize(uPointDir + vec3(0.0001)) * iP * (0.9 + 0.5 * aSeed)
+     + normalize(dP + vec3(0.0001)) * iP * 0.30;
+
+  /* --- 冲击波 --- */
+  float shock = uShock * exp(-pow((length(p) - uShockRadius) / 24.0, 2.0));
+  p += normalize(p + vec3(0.0001)) * shock * 30.0;
+
+  vec4 mv = modelViewMatrix * vec4(p, 1.0);
+
+  float glow = abs(i0) * 0.06 + abs(i1) * 0.06 + iP * 0.05 + shock * 0.9;
+  gl_PointSize = aSize * uSizeScale * uPixelRatio * (1.0 + glow) * (300.0 / max(-mv.z, 1.0));
+  gl_Position = projectionMatrix * mv;
+
+  /* --- HSL 冷暖对冲上色 ---
+     色带必须「空间相干」：相邻粒子共享相近色相，叠加后才会保留青 / 品红分区；
+     若逐粒子随机色相相位过大，加色混合会互相抵消成白粉色。 */
+  float radial = clamp(length(p) / 75.0, 0.0, 1.0);
+  float band = clamp(0.5 + 0.5 * sin(p.y * 0.055 + uFlow * uTime * 0.5 + aSeed * 0.8), 0.0, 1.0);
+  band = clamp(band * 0.78 + radial * 0.22, 0.0, 1.0);
+  /* 色相漂移必须有界：用振荡而不是随时间累积的角度，
+     否则一分钟后整盘颜色会转出主题（例如「霓虹青紫」漂成绿色）。 */
+  float drift = sin(uTime * 0.22 + aSeed * 0.5) * (10.0 + uFlow * 30.0);
+  float hue = mod(uHueA + (uHueB - uHueA) * band
+              + (aHueOffset - 0.5) * uHueSpread
+              + drift, 360.0);
+  float light = clamp(uLight + 0.20 * (1.0 - radial) + glow * 0.25, 0.0, 1.0);
+  vec3 col = hsl2rgb(vec3(hue / 360.0, uSat, light));
+
+  vColor = pow(col, vec3(uGamma)) * (uIntensity + glow * 0.8);
+  vFogDepth = -mv.z;
+}
+`;
+
+const FRAG = `
+precision highp float;
+
+uniform sampler2D uMap;
+uniform vec3  uFogColor;
+uniform float uFogDensity;
+uniform float uOpacity;
+
+varying vec3  vColor;
+varying float vFogDepth;
+
+void main() {
+  float a = texture2D(uMap, gl_PointCoord).a;
+  if (a < 0.012) discard;
+  float fog = 1.0 - exp(-uFogDensity * uFogDensity * vFogDepth * vFogDepth);
+  vec3 col = mix(vColor, uFogColor, clamp(fog, 0.0, 0.85));
+  gl_FragColor = vec4(col, a * uOpacity);
+}
+`;
+
+/* ------------------------------ 运行状态 ------------------------------ */
+function newHandState() {
+  return {
+    active: false, lastSeen: 0,
+    gesture: 'none', candidate: 'none', candSince: 0,
+    strength: 0, radius: CFG.FORCE_RADIUS, pinch: 0, roll: 0,
+    screen: { x: 0.5, y: 0.5 }, local: { x: 0, y: 0, z: 0 },
+    tipLocal: { x: 0, y: 0, z: 0 }, pointDir: { x: 0, y: 0, z: -1 },
+    fx: new OneEuro(1.0, 0.007), fy: new OneEuro(1.0, 0.007),
+    fr: new OneEuro(1.0, 0.007), fp: new OneEuro(1.2, 0.010),
+  };
+}
+
+const state = {
+  spread: 1, swirl: 0.12, zoom: 1, layer: 0, heart: 0,
+  yaw: 0, pitch: 0, roll: 0, demoYaw: 0,
+  handCount: 0, gestureLabel: '摄像头未启用',
+  shock: 0, shockRadius: 0, shockStart: -1,
+  pointPower: 0, pointOrigin: { x: 0, y: 0, z: 0 },
+  hands: [newHandState(), newHandState()],
+};
+
+let currentShape = 0, themeIndex = 0;
+let demoActive = false, demoPaused = false, demoNext = 0, lastHandSeen = performance.now();
+let manualHoldUntil = 0;
+let twoHandDist = null, prevLineAngle = null, prevTwoHandDist = null, lineAngVel = 0;
+let trackerReady = false, landmarker = null, camStream = null, lastVideoTime = -1;
+
+/* ------------------------------ 运行时对象 ------------------------------ */
+let renderer, scene, camera, group, points, posAttr, targetAttr, uniforms, shapeArrays = [];
+let composer, bloomPass, afterImagePass, controls, raycaster, stardust;
+let morph = { t: 1, dur: CFG.MORPH_S };
+let fpsFrames = 0, fpsLast = performance.now(), fpsValue = 60, fpsHudLast = 0;
+const quality = { stage: 0, low: 0, high: 0, lastChange: 0, locked: false };
+const video = $('cam'), camCanvas = $('camOverlay'), camCtx = camCanvas.getContext('2d');
+
+/* ------------------------------ 启动 ------------------------------ */
+async function boot() {
+  setStatus('正在加载 Three.js 模块…');
+  THREE = await import('three');
+  const [oc, ec, rp, ub, ai, op] = await Promise.all([
+    import('three/addons/controls/OrbitControls.js'),
+    import('three/addons/postprocessing/EffectComposer.js'),
+    import('three/addons/postprocessing/RenderPass.js'),
+    import('three/addons/postprocessing/UnrealBloomPass.js'),
+    import('three/addons/postprocessing/AfterimagePass.js'),
+    import('three/addons/postprocessing/OutputPass.js'),
+  ]);
+  OrbitControls = oc.OrbitControls;
+  EffectComposer = ec.EffectComposer;
+  RenderPass = rp.RenderPass;
+  UnrealBloomPass = ub.UnrealBloomPass;
+  AfterimagePass = ai.AfterimagePass;
+  OutputPass = op.OutputPass;
+
+  setStatus('正在构建粒子场景…');
+  buildScene();
+  buildLegend();
+  bindUI();
+
+  setStatus('资源就绪 · 点击「启用手势控制」开始');
+  hideError();
+  lastHandSeen = performance.now();
+  animate(performance.now());
+}
+
+function buildScene() {
+  renderer = new THREE.WebGLRenderer({ canvas: $('gl'), antialias: false, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CFG.DPR_MAX));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(CFG.BG);
+  scene.fog = new THREE.FogExp2(CFG.BG, CFG.FOG_DENSITY);
+
+  camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 4000);
+  // 略微俯视：星系盘位于 XZ 平面，正对 -Z 看会完全侧视（螺旋臂看不见），
+  // 抬高相机形成 3/4 视角，同时让整体更具立体感。
+  camera.position.set(0, 42, 100);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.06;
+  controls.minDistance = 40;
+  controls.maxDistance = 400;
+  controls.enablePan = false;
+
+  raycaster = new THREE.Raycaster();
+  group = new THREE.Group();
+  scene.add(group);
+
+  /* ---- 粒子几何 ---- */
+  const rng = mulberry32(20261016);
+  const n = CFG.COUNT;
+  const scattered = shapeScatter(n, rng);
+  shapeArrays = SHAPES.map((s, i) => s.gen(n, mulberry32(1000 + i * 7919)));
+
+  const seed = new Float32Array(n), size = new Float32Array(n);
+  const hueOff = new Float32Array(n), phase = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    seed[i] = rng();
+    const big = rng() < 0.02;
+    size[i] = (big ? 1.7 : 0.65) + rng() * (big ? 1.0 : 1.0);
+    hueOff[i] = rng();
+    phase[i] = rng();
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(scattered.slice(), 3));
+  geo.setAttribute('aTarget', new THREE.BufferAttribute(shapeArrays[0].slice(), 3));
+  geo.setAttribute('aSeed', new THREE.BufferAttribute(seed, 1));
+  geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+  geo.setAttribute('aHueOffset', new THREE.BufferAttribute(hueOff, 1));
+  geo.setAttribute('aPhase', new THREE.BufferAttribute(phase, 1));
+  geo.setDrawRange(0, CFG.COUNT);
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 400);
+  posAttr = geo.getAttribute('position');
+  targetAttr = geo.getAttribute('aTarget');
+
+  const th = THEMES[0];
+  uniforms = {
+    uTime: { value: 0 }, uMorph: { value: 0 }, uSpread: { value: 1 }, uSwirl: { value: 0.12 },
+    uShock: { value: 0 }, uShockRadius: { value: 0 }, uLayerY: { value: 0 }, uHeart: { value: 0 },
+    uSizeScale: { value: 1.0 }, uPixelRatio: { value: renderer.getPixelRatio() },
+    uIntensity: { value: th.intensity }, uGamma: { value: CFG.GAMMA },
+    uHueA: { value: th.hueA }, uHueB: { value: th.hueB }, uHueSpread: { value: th.spread },
+    uFlow: { value: th.flow }, uSat: { value: th.sat }, uLight: { value: th.light },
+    uFogDensity: { value: CFG.FOG_DENSITY }, uFogColor: { value: new THREE.Color(th.fog) },
+    uHandPos0: { value: new THREE.Vector3() }, uHandPos1: { value: new THREE.Vector3() },
+    uHandStrength0: { value: 0 }, uHandStrength1: { value: 0 },
+    uHandRadius0: { value: CFG.FORCE_RADIUS }, uHandRadius1: { value: CFG.FORCE_RADIUS },
+    uPointOrigin: { value: new THREE.Vector3() }, uPointDir: { value: new THREE.Vector3(0, 0, -1) },
+    uPointPower: { value: 0 },
+    uMap: { value: makeGlowTexture(128) }, uOpacity: { value: 0.72 },
+  };
+
+  const mat = new THREE.ShaderMaterial({
+    uniforms, vertexShader: VERT, fragmentShader: FRAG,
+    blending: THREE.AdditiveBlending, depthTest: true, depthWrite: false,
+    transparent: true, toneMapped: false,
+  });
+  points = new THREE.Points(geo, mat);
+  points.frustumCulled = false;
+  group.add(points);
+
+  /* ---- 背景星尘（不受雾影响，压在辉光阈值下）---- */
+  const sdN = CFG.STARDUST, sdPos = new Float32Array(sdN * 3), rng2 = mulberry32(777);
+  for (let i = 0; i < sdN; i++) {
+    const th2 = rng2() * Math.PI * 2, ph2 = Math.acos(2 * rng2() - 1), r = 150 + rng2() * 240;
+    sdPos[i * 3] = Math.sin(ph2) * Math.cos(th2) * r;
+    sdPos[i * 3 + 1] = Math.cos(ph2) * r;
+    sdPos[i * 3 + 2] = Math.sin(ph2) * Math.sin(th2) * r;
+  }
+  const sdGeo = new THREE.BufferGeometry();
+  sdGeo.setAttribute('position', new THREE.BufferAttribute(sdPos, 3));
+  stardust = new THREE.Points(sdGeo, new THREE.PointsMaterial({
+    color: 0x2b4570, size: 1.7, sizeAttenuation: true, transparent: true, opacity: 0.9,
+    blending: THREE.AdditiveBlending, depthWrite: false, fog: false, toneMapped: false,
+  }));
+  stardust.renderOrder = -1;
+  stardust.frustumCulled = false;
+  scene.add(stardust);
+
+  /* ---- 后处理：Render → Bloom → Afterimage → Output(ACES+sRGB) ---- */
+  composer = new EffectComposer(renderer);
+  if (composer.setPixelRatio) composer.setPixelRatio(renderer.getPixelRatio());
+  composer.setSize(window.innerWidth, window.innerHeight);
+  composer.addPass(new RenderPass(scene, camera));
+  bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    CFG.BLOOM.strength, CFG.BLOOM.radius, CFG.BLOOM.threshold,
+  );
+  composer.addPass(bloomPass);
+  afterImagePass = new AfterimagePass(CFG.AFTERIMAGE);
+  composer.addPass(afterImagePass);
+  composer.addPass(new OutputPass());
+
+  applyTheme(0, false);
+  morph = { t: 0, dur: CFG.MORPH_INTRO_S };
+  window.addEventListener('resize', onResize);
+}
+
+function makeGlowTexture(size) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0.00, 'rgba(255,255,255,1)');
+  g.addColorStop(0.16, 'rgba(255,255,255,0.62)');
+  g.addColorStop(0.38, 'rgba(255,255,255,0.16)');
+  g.addColorStop(0.66, 'rgba(255,255,255,0.03)');
+  g.addColorStop(1.00, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(c);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function onResize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  composer.setSize(w, h);
+  applyQuality();
+}
+
+/* ------------------------------ 形态切换 ------------------------------ */
+const easeCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+function setShape(i, instant) {
+  i = ((i % SHAPES.length) + SHAPES.length) % SHAPES.length;
+  if (!shapeArrays.length) return;
+  if (instant) {
+    posAttr.array.set(shapeArrays[i]);
+    targetAttr.array.set(shapeArrays[i]);
+    posAttr.needsUpdate = true; targetAttr.needsUpdate = true;
+    morph = { t: 1, dur: CFG.MORPH_S };
+  } else {
+    // 把「当前视觉位置」快照为新起点，避免过渡途中切换造成跳变
+    const e = easeCubic(clamp(morph.t, 0, 1));
+    const p = posAttr.array, tg = targetAttr.array;
+    for (let k = 0; k < p.length; k++) p[k] = p[k] + (tg[k] - p[k]) * e;
+    targetAttr.array.set(shapeArrays[i]);
+    posAttr.needsUpdate = true; targetAttr.needsUpdate = true;
+    morph = { t: 0, dur: CFG.MORPH_S };
+  }
+  currentShape = i;
+  $('shapeName').textContent = SHAPES[i].name;
+}
+
+/* ------------------------------ 主题 ------------------------------ */
+function applyTheme(i, flash) {
+  themeIndex = ((i % THEMES.length) + THEMES.length) % THEMES.length;
+  const th = THEMES[themeIndex];
+  uniforms.uHueA.value = th.hueA;
+  uniforms.uHueB.value = th.hueB;
+  uniforms.uSat.value = th.sat;
+  uniforms.uLight.value = th.light;
+  uniforms.uHueSpread.value = th.spread;
+  uniforms.uFlow.value = th.flow;
+  uniforms.uIntensity.value = th.intensity;
+  bloomPass.strength = th.bloom;
+  const fc = new THREE.Color(th.fog);
+  scene.fog.color.copy(fc);
+  uniforms.uFogColor.value.copy(fc);
+  $('themeName').textContent = th.name;
+  if (flash) doFlash(0.5, 420);
+}
+
+function doFlash(peak, ms) {
+  const el = $('flash');
+  el.style.transition = 'none';
+  el.style.opacity = String(peak);
+  requestAnimationFrame(() => {
+    el.style.transition = 'opacity ' + ms + 'ms ease-out';
+    el.style.opacity = '0';
+  });
+}
+
+/* ------------------------------ 手势分类 ------------------------------ */
+function classify(lm) {
+  const d2 = (a, b) => Math.hypot(lm[a].x - lm[b].x, lm[a].y - lm[b].y);
+  const size = Math.max(d2(0, 9), 1e-3);
+  const ext = [
+    d2(4, 17) > d2(2, 17) * 1.18,     // 拇指
+    d2(8, 0) > d2(6, 0) * 1.12,       // 食指
+    d2(12, 0) > d2(10, 0) * 1.12,     // 中指
+    d2(16, 0) > d2(14, 0) * 1.12,     // 无名指
+    d2(20, 0) > d2(18, 0) * 1.12,     // 小指
+  ];
+  const nFour = ext.slice(1).filter(Boolean).length;
+  const pinchRatio = d2(4, 8) / size;
+  const pinchAmt = clamp(1 - (pinchRatio - 0.12) / (0.95 - 0.12), 0, 1);
+  const tuck = (d2(8, 9) + d2(12, 9) + d2(16, 9) + d2(20, 9)) / 4 / size;
+  const indexOut = d2(8, 0) / size;   // 食指指尖远离手腕 → 食指没有收进掌心
+
+  // 顺序即优先级：张掌 > 捏合 > 握拳 > 指向 > 胜利。
+  // 捏合必须排在握拳之前：真实捏合时食指多在半屈状态，容易被判成握拳，
+  // 用 indexOut（指尖离腕距离）把「收进掌心的拳头」与「伸出去捏合的手」区分开。
+  let gesture = 'none';
+  if (nFour >= 4) gesture = 'open';
+  else if (pinchRatio < 0.34 && indexOut > 1.15) gesture = 'pinch';
+  else if (nFour === 0 && tuck < 0.9) gesture = 'fist';
+  else if (nFour === 1 && ext[1]) gesture = 'point';
+  else if (nFour === 2 && ext[1] && ext[2]) gesture = 'victory';
+  return { gesture, pinchAmt, pinchRatio, tuck, indexOut, ext, nFour };
+}
+
+function rollOf(lm) {
+  const dx = lm[17].x - lm[5].x, dy = lm[17].y - lm[5].y;
+  let a = Math.atan2(dy, dx);
+  if (a > Math.PI / 2) a -= Math.PI;
+  if (a < -Math.PI / 2) a += Math.PI;
+  return clamp(-a, -1.1, 1.1);
+}
+
+function screenToLocal(xDisplay, yImage, out) {
+  const ndc = new THREE.Vector3(xDisplay * 2 - 1, 1 - yImage * 2, 0.5);
+  raycaster.setFromCamera(ndc, camera);
+  const dir = raycaster.ray.direction, org = raycaster.ray.origin;
+  let vx = null, vy = 0;
+  if (Math.abs(dir.z) > 1e-4) {
+    const t = -org.z / dir.z;
+    if (t > 0.1 && t < 6000) { vx = org.x + dir.x * t; vy = org.y + dir.y * t; }
+  }
+  if (vx === null) {   // 兜底：直接按 z=0 平面换算
+    const hh = 2 * Math.abs(camera.position.z) * Math.tan((camera.fov * Math.PI / 180) / 2);
+    vx = (xDisplay - 0.5) * hh * camera.aspect;
+    vy = (0.5 - yImage) * hh;
+  }
+  const v = new THREE.Vector3(vx, vy, 0);
+  group.worldToLocal(v);
+  out.x = v.x; out.y = v.y; out.z = v.z;
+  return out;
+}
+
+function stepGestureMachine(h, raw, now) {
+  if (raw === h.candidate) {
+    if (raw !== h.gesture && now - h.candSince >= CFG.CONFIRM_MS) {
+      if (raw === 'victory') applyTheme(themeIndex + 1, true);
+      h.gesture = raw;
+    }
+  } else {
+    h.candidate = raw;
+    h.candSince = now;
+  }
+}
+
+function processHands(res, now) {
+  group.updateMatrixWorld();
+  const hands = [];
+  const lms = (res && res.landmarks) || [];
+  const wls = (res && res.worldLandmarks) || [];
+  for (let i = 0; i < lms.length; i++) {
+    const lm = lms[i];
+    if (!lm || lm.length < 21) continue;
+    hands.push({
+      lm, wl: wls[i] || null, raw: classify(lm),
+      palm: { x: (lm[0].x + lm[9].x) * 0.5, y: (lm[0].y + lm[9].y) * 0.5 },
+      roll: rollOf(lm),
+    });
+  }
+  // 按图像 x 降序 → 槽位 0 恒为「屏幕左侧」的手，槽位稳定不跳
+  hands.sort((a, b) => b.palm.x - a.palm.x);
+
+  const tSec = now / 1000;
+  for (let s = 0; s < 2; s++) {
+    const st = state.hands[s], h = hands[s];
+    if (!h) continue;
+    st.active = true;
+    st.lastSeen = now;
+    stepGestureMachine(st, h.raw.gesture, now);
+    st.screen.x = st.fx.filter(1 - h.palm.x, tSec);   // 镜像 → 显示坐标
+    st.screen.y = st.fy.filter(h.palm.y, tSec);
+    st.roll = st.fr.filter(h.roll, tSec);
+    st.pinch = st.fp.filter(h.raw.pinchAmt, tSec);
+    screenToLocal(st.screen.x, st.screen.y, st.local);
+
+    if (h.raw.gesture === 'point' || st.gesture === 'point') {
+      screenToLocal(st.fx.filter(1 - h.lm[8].x, tSec), st.fy.filter(h.lm[8].y, tSec), st.tipLocal);
+      const mcp = { x: 0, y: 0, z: 0 };
+      screenToLocal(clamp(1 - h.lm[5].x, 0, 1), h.lm[5].y, mcp);
+      let dx = st.tipLocal.x - mcp.x, dy = st.tipLocal.y - mcp.y, dz = -0.35;
+      const len = Math.hypot(dx, dy, dz) || 1;
+      st.pointDir.x = dx / len; st.pointDir.y = dy / len; st.pointDir.z = dz / len;
+    }
+  }
+
+  /* ---- 双手几何量 ---- */
+  if (hands.length >= 2 && hands[0].wl && hands[1].wl) {
+    const a = hands[0].wl[9], b = hands[1].wl[9];
+    twoHandDist = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+    if (prevTwoHandDist !== null && prevTwoHandDist - twoHandDist > 0.075 && twoHandDist < 0.14) {
+      triggerShock(now);
+    }
+    prevTwoHandDist = twoHandDist;
+
+    const ang = Math.atan2(state.hands[1].screen.y - state.hands[0].screen.y,
+                           state.hands[1].screen.x - state.hands[0].screen.x);
+    if (prevLineAngle !== null) {
+      let d = ang - prevLineAngle;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      lineAngVel = lineAngVel * 0.7 + (d / 0.033) * 0.3;
+    }
+    prevLineAngle = ang;
+  } else {
+    twoHandDist = null; prevTwoHandDist = null; prevLineAngle = null;
+    lineAngVel *= 0.9;
+  }
+
+  drawSkeleton(hands);
+}
+
+function triggerShock(now) {
+  state.shockStart = now;
+  state.shock = 1;
+  state.shockRadius = 0;
+  doFlash(0.12, 500);
+}
+
+function decayHands(now) {
+  for (const st of state.hands) {
+    if (st.active && now - st.lastSeen > 300) {
+      st.active = false;
+      st.gesture = 'none';
+      st.candidate = 'none';
+      st.fx.reset(); st.fy.reset(); st.fr.reset(); st.fp.reset();
+    }
+  }
+}
+
+function drawSkeleton(hands) {
+  if (camCanvas.width !== 640) { camCanvas.width = 640; camCanvas.height = 480; }
+  const w = camCanvas.width, h = camCanvas.height;
+  camCtx.clearRect(0, 0, w, h);
+  for (const hand of hands) {
+    const g = hand.raw.gesture;
+    camCtx.strokeStyle = g === 'fist' ? '#ff7ad9' : g === 'open' ? '#5ff0ff'
+      : g === 'pinch' ? '#ffd166' : g === 'victory' ? '#a06bff' : '#7fe9ff';
+    camCtx.globalAlpha = 0.92;
+    camCtx.lineWidth = 2;
+    camCtx.beginPath();
+    for (const [a, b] of HAND_CONNECTIONS) {
+      camCtx.moveTo(hand.lm[a].x * w, hand.lm[a].y * h);
+      camCtx.lineTo(hand.lm[b].x * w, hand.lm[b].y * h);
+    }
+    camCtx.stroke();
+    camCtx.fillStyle = camCtx.strokeStyle;
+    for (let i = 0; i < 21; i++) {
+      const isTip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20;
+      camCtx.beginPath();
+      camCtx.arc(hand.lm[i].x * w, hand.lm[i].y * h, isTip ? 4.5 : 2.6, 0, Math.PI * 2);
+      camCtx.fill();
+    }
+    camCtx.globalAlpha = 1;
+  }
+}
+
+/* ------------------------------ 参数求解与平滑 ------------------------------ */
+const GESTURE_CN = { none: '无', open: '张掌', fist: '握拳', pinch: '捏合', point: '指向', victory: '胜利' };
+
+function updateParams(dt, now) {
+  const hs = state.hands;
+  const act = [hs[0].active, hs[1].active];
+  const n = (act[0] ? 1 : 0) + (act[1] ? 1 : 0);
+  state.handCount = n;
+  const gs = [act[0] ? hs[0].gesture : 'none', act[1] ? hs[1].gesture : 'none'];
+  const anyOpen = gs.indexOf('open') >= 0, anyFist = gs.indexOf('fist') >= 0;
+
+  /* --- 扩散：张掌 / 握拳 --- */
+  let spreadT = 1.0;
+  if (anyFist && anyOpen) spreadT = 0.85;
+  else if (anyFist) spreadT = CFG.SPREAD_FIST;
+  else if (anyOpen) spreadT = n >= 2 ? CFG.SPREAD_OPEN + 0.12 : CFG.SPREAD_OPEN;
+  state.spread = smooth(state.spread, spreadT, dt, 0.22);
+
+  /* --- 缩放：双手距离优先，单手指尖捏合其次 --- */
+  let zoomT = demoActive ? 1 + 0.12 * Math.sin(now * 0.0004) : 1.0;
+  if (n >= 2 && twoHandDist !== null) {
+    zoomT = clamp(remap(twoHandDist, 0.14, 0.85, 0.72, 1.45), 0.7, 1.5);
+  } else if (n === 1) {
+    const p = Math.max(act[0] ? hs[0].pinch : 0, act[1] ? hs[1].pinch : 0);
+    if (p > 0.05) zoomT = 1 - CFG.PINCH_SCALE * p;
+  }
+  state.zoom = clamp(smooth(state.zoom, zoomT, dt, 0.16), 0.4, 2.0);
+
+  /* --- 涡旋：双掌绕连线旋转驱动 --- */
+  let swirlT = 0.12 * SHAPES[currentShape].swirl;
+  if (n >= 2) swirlT = clamp(lineAngVel * 0.45, -1.6, 1.6) + 0.12;
+  state.swirl = smooth(state.swirl, swirlT, dt, 0.18);
+
+  /* --- 分层托举：双手高低差 --- */
+  let layerT = 0;
+  if (n >= 2) layerT = clamp((Math.abs(hs[0].screen.y - hs[1].screen.y) - 0.14) / 0.42, 0, 1) * 0.85;
+  state.layer = smooth(state.layer, layerT, dt, 0.25);
+
+  /* --- 姿态：掌位 → yaw/pitch，掌面倾角 → roll --- */
+  let yawT = 0, pitchT = 0, rollT = 0;
+  if (n >= 1) {
+    let sx = 0, sy = 0, c = 0;
+    for (let s = 0; s < 2; s++) if (act[s]) { sx += hs[s].screen.x; sy += hs[s].screen.y; c++; }
+    yawT = ((sx / c) - 0.5) * 1.15;
+    pitchT = (0.5 - (sy / c)) * 0.95;
+    rollT = clamp(act[0] ? hs[0].roll : hs[1].roll, -0.9, 0.9);
+  }
+  state.yaw = smooth(state.yaw, yawT, dt, 0.20);
+  state.pitch = smooth(state.pitch, pitchT, dt, 0.20);
+  state.roll = smooth(state.roll, rollT, dt, 0.20);
+
+  /* --- 手部力场：拳头吸引 / 张掌排斥 --- */
+  for (let s = 0; s < 2; s++) {
+    const st = hs[s];
+    let strengthT = 0, radiusT = CFG.FORCE_RADIUS;
+    if (st.active) {
+      if (st.gesture === 'fist') { strengthT = -CFG.ATTRACT; radiusT = 24; }
+      else if (st.gesture === 'open') { strengthT = CFG.REPEL; radiusT = 30; }
+      else if (st.gesture === 'pinch') { strengthT = -CFG.ATTRACT * 0.5; radiusT = 16; }
+      else if (st.gesture === 'point') { strengthT = CFG.REPEL * 0.3; radiusT = 18; }
+      else if (st.gesture === 'victory') { strengthT = CFG.REPEL * 0.15; radiusT = 22; }
+    }
+    st.strength = smooth(st.strength, strengthT, dt, 0.20);
+    st.radius = smooth(st.radius, radiusT, dt, 0.25);
+  }
+
+  /* --- 指向喷射 --- */
+  let pointHand = null;
+  for (let s = 0; s < 2; s++) if (act[s] && hs[s].gesture === 'point') pointHand = hs[s];
+  if (pointHand) {
+    state.pointOrigin.x = smooth(state.pointOrigin.x, pointHand.tipLocal.x, dt, 0.12);
+    state.pointOrigin.y = smooth(state.pointOrigin.y, pointHand.tipLocal.y, dt, 0.12);
+    state.pointOrigin.z = smooth(state.pointOrigin.z, pointHand.tipLocal.z, dt, 0.12);
+    uniforms.uPointDir.value.set(pointHand.pointDir.x, pointHand.pointDir.y, pointHand.pointDir.z);
+  }
+  state.pointPower = smooth(state.pointPower, pointHand ? 15 : 0, dt, 0.15);
+
+  /* --- 冲击波衰减（1.5s）--- */
+  if (state.shockStart >= 0) {
+    const k = (now - state.shockStart) / 1000;
+    if (k > 1.6) { state.shockStart = -1; state.shock = 0; }
+    else { state.shock = Math.max(0, 1 - k / 1.5); state.shockRadius = 115 * Math.min(1, k / 0.8); }
+  }
+
+  /* --- 心跳，仅心形形态 --- */
+  const heartT = currentShape === 4 ? Math.pow(0.5 + 0.5 * Math.sin((now / 1000) * 4.2), 6) : 0;
+  state.heart = smooth(state.heart, heartT, dt, 0.05);
+
+  /* --- 组变换 --- */
+  if (!Number.isFinite(state.zoom)) state.zoom = 1;
+  if (!Number.isFinite(state.yaw)) state.yaw = 0;
+  group.rotation.set(state.pitch, state.yaw + state.demoYaw, state.roll);
+  group.scale.setScalar(state.zoom);
+
+  state.gestureLabel = buildLabel(n, gs, anyOpen, anyFist);
+  return n;
+}
+
+function buildLabel(n, gs, anyOpen, anyFist) {
+  if (!trackerReady) return '鼠标模式 · 无手势输入';
+  if (n === 0) return '未检测到手（自动演示中）';
+  const parts = [];
+  for (let s = 0; s < 2; s++) {
+    if (!state.hands[s].active) continue;
+    parts.push((s === 0 ? '左手' : '右手') + ' ' + (GESTURE_CN[state.hands[s].gesture] || '无'));
+  }
+  const extra = [];
+  if (n >= 2 && anyFist && anyOpen) extra.push('一握一张 ▸ ' + (gs[0] === 'fist' ? '吸引' : '排斥'));
+  if (n >= 2 && Math.abs(state.swirl) > 0.4) extra.push('双掌涡旋');
+  if (n >= 2 && state.layer > 0.25) extra.push('分层托举');
+  if (state.shock > 0.3) extra.push('冲击波');
+  return parts.join(' · ') + (extra.length ? ' ▸ ' + extra.join(' / ') : '');
+}
+
+/* ------------------------------ 自动演示 / 画质降级 ------------------------------ */
+function stopDemo() {
+  demoActive = false;
+  $('demoTag').style.display = 'none';
+}
+
+/* 手动操作（键盘）后暂停自动演示一段时间，避免系统覆盖用户的选择 */
+function exitDemo() {
+  stopDemo();
+  lastHandSeen = performance.now();
+  manualHoldUntil = lastHandSeen + CFG.MANUAL_HOLD_MS;
+}
+
+function updateAutoDemo(now, dt) {
+  if (state.handCount > 0) {
+    lastHandSeen = now;
+    if (demoActive) stopDemo();
+    return;
+  }
+  if (!demoPaused && !demoActive && now > manualHoldUntil && now - lastHandSeen > CFG.DEMO_DELAY_MS) {
+    demoActive = true;
+    demoNext = now;
+    $('demoTag').style.display = 'block';
+  }
+  if (demoActive && !demoPaused) {
+    state.demoYaw += dt * 0.12;
+    if (now - demoNext > CFG.DEMO_SHAPE_MS) { demoNext = now; setShape(currentShape + 1); }
+  }
+}
+
+function updateFps(now) {
+  fpsFrames++;
+  const el = now - fpsLast;
+  if (el < 500) return;
+  fpsValue = (fpsFrames * 1000) / el;
+  fpsFrames = 0;
+  fpsLast = now;
+  const q = quality.stage === 0 ? '高' : quality.stage === 1 ? '中' : '低';
+  $('fps').textContent = fpsValue.toFixed(0) + ' / ' + q;
+  $('statsLine').textContent = state.handCount + ' / ' + (quality.stage >= 2 ? CFG.COUNT_LOW : CFG.COUNT);
+  updateQuality(now);
+}
+
+function applyQuality() {
+  const w = window.innerWidth, h = window.innerHeight;
+  const s = quality.stage >= 1 ? 0.5 : 1;
+  bloomPass.setSize(w * s, h * s);
+  afterImagePass.uniforms.damp.value = quality.stage >= 1 ? 0.88 : CFG.AFTERIMAGE;
+  points.geometry.setDrawRange(0, quality.stage >= 2 ? CFG.COUNT_LOW : CFG.COUNT);
+}
+
+function updateQuality(now) {
+  const dt = 0.5;
+  if (fpsValue < 45) quality.low += dt; else quality.low = Math.max(0, quality.low - dt * 0.5);
+  if (fpsValue > 55) quality.high += dt; else quality.high = Math.max(0, quality.high - dt * 0.5);
+  if (quality.locked || now - quality.lastChange < 4000) return;
+  if (quality.low > 2 && quality.stage < 2) {
+    quality.stage++;
+    quality.low = 0; quality.lastChange = now;
+    if (quality.stage === 2) quality.locked = true;   // 只自动降级一次，避免来回抖动
+    applyQuality();
+  } else if (quality.high > 5 && quality.stage > 0 && now - quality.lastChange > 6000) {
+    quality.stage--;
+    quality.high = 0; quality.lastChange = now;
+    applyQuality();
+  }
+}
+
+/* ------------------------------ 渲染循环 ------------------------------ */
+let prevFrameTime = 0;
+
+function animate(now) {
+  requestAnimationFrame(animate);
+  const dt = prevFrameTime ? Math.min(0.05, (now - prevFrameTime) / 1000) : 0.016;
+  prevFrameTime = now;
+
+  /* 手势检测：跟随视频帧节流 */
+  if (trackerReady && landmarker && video.readyState >= 2) {
+    if (video.currentTime !== lastVideoTime) {
+      lastVideoTime = video.currentTime;
+      try {
+        processHands(landmarker.detectForVideo(video, now), now);
+      } catch (e) {
+        trackerReady = false;
+        attachMouseMode();
+        showError('手部识别中断：' + (e && e.message ? e.message : e) + '（可点「重试摄像头」，或继续用鼠标体验）');
+      }
+    }
+    decayHands(now);
+  } else {
+    decayHands(now);
+  }
+
+  updateParams(dt, now);
+  updateAutoDemo(now, dt);
+
+  /* 形态过渡 */
+  if (morph.t < 1) morph.t = Math.min(1, morph.t + dt / morph.dur);
+  uniforms.uMorph.value = morph.t;
+
+  /* uniform 同步 */
+  uniforms.uTime.value = now / 1000;
+  uniforms.uSpread.value = state.spread;
+  uniforms.uSwirl.value = state.swirl;
+  uniforms.uShock.value = state.shock;
+  uniforms.uShockRadius.value = state.shockRadius;
+  uniforms.uLayerY.value = state.layer;
+  uniforms.uHeart.value = state.heart;
+  uniforms.uSizeScale.value = SHAPES[currentShape].size * (1 + (state.zoom - 1) * 0.25);
+  uniforms.uPointPower.value = state.pointPower;
+  uniforms.uPointOrigin.value.set(state.pointOrigin.x, state.pointOrigin.y, state.pointOrigin.z);
+  uniforms.uHandPos0.value.set(state.hands[0].local.x, state.hands[0].local.y, state.hands[0].local.z);
+  uniforms.uHandPos1.value.set(state.hands[1].local.x, state.hands[1].local.y, state.hands[1].local.z);
+  uniforms.uHandStrength0.value = state.hands[0].strength;
+  uniforms.uHandStrength1.value = state.hands[1].strength;
+  uniforms.uHandRadius0.value = state.hands[0].radius;
+  uniforms.uHandRadius1.value = state.hands[1].radius;
+
+  /* 星尘缓慢自转 */
+  stardust.rotation.y += dt * 0.008;
+  stardust.rotation.x += dt * 0.003;
+
+  /* 相机与后处理 */
+  controls.enabled = state.handCount === 0;
+  controls.update();
+  composer.render(dt);
+
+  /* HUD 数值（限频） */
+  if (now - fpsHudLast > 120) {
+    fpsHudLast = now;
+    $('barSpread').style.width = (clamp((state.spread - 0.2) / 1.7, 0, 1) * 100).toFixed(1) + '%';
+    $('vSpread').textContent = state.spread.toFixed(2);
+    $('barSwirl').style.width = (clamp(Math.abs(state.swirl) / 1.6, 0, 1) * 100).toFixed(1) + '%';
+    $('vSwirl').textContent = state.swirl.toFixed(2);
+    $('barZoom').style.width = (clamp((state.zoom - 0.6) / 1.0, 0, 1) * 100).toFixed(1) + '%';
+    $('vZoom').textContent = state.zoom.toFixed(2);
+    $('barShock').style.width = (clamp(state.shock, 0, 1) * 100).toFixed(1) + '%';
+    $('vShock').textContent = state.shock.toFixed(2);
+    $('gestureName').textContent = state.gestureLabel;
+    $('gestureBadge').textContent = state.gestureLabel;
+    updateFps(now);
+  }
+}
+
+/* ------------------------------ 摄像头与识别器 ------------------------------ */
+async function startCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error('当前浏览器不支持摄像头 API（getUserMedia）。');
+  }
+  if (!window.isSecureContext) {
+    throw new Error('当前页面不是安全上下文。请在项目目录执行 python -m http.server 8000，再访问 http://localhost:8000/index.html。');
+  }
+  if (camStream) camStream.getTracks().forEach((t) => t.stop());
+  camStream = await navigator.mediaDevices.getUserMedia({
+    video: { width: CFG.CAM_W, height: CFG.CAM_H, facingMode: 'user' },
+    audio: false,
+  });
+  video.srcObject = camStream;
+  await video.play().catch(() => {});
+  $('camHint').style.display = 'none';
+}
+
+/* 模型优先取同域副本（部署时随页面一起上传），取不到再用官方 Google 存储。
+   注意：file:// 下 HEAD 探测会失败，因此单文件直接打开仍走官方地址。 */
+let resolvedModelUrl = null;
+async function resolveModelUrl() {
+  if (resolvedModelUrl) return resolvedModelUrl;
+  try {
+    const local = new URL(CFG.MODEL_LOCAL, location.href).href;
+    const r = await fetch(local, { method: 'HEAD', cache: 'no-store' });
+    if (r.ok) { resolvedModelUrl = local; return resolvedModelUrl; }
+  } catch (e) { /* 落到官方地址 */ }
+  resolvedModelUrl = CFG.MODEL_URL;
+  return resolvedModelUrl;
+}
+
+async function ensureLandmarker() {
+  if (trackerReady) return;
+  setStatus('正在加载手部识别模型（约 8MB，仅需一次）…');
+  const modelUrl = await resolveModelUrl();
+  let lastErr = null;
+  for (let i = 0; i < CFG.VISION_URLS.length; i++) {
+    try {
+      const mod = await import(CFG.VISION_URLS[i]);
+      const fileset = await mod.FilesetResolver.forVisionTasks(CFG.WASM_ROOTS[i]);
+      const options = (delegate) => ({
+        baseOptions: { modelAssetPath: modelUrl, delegate },
+        runningMode: 'VIDEO',
+        numHands: 2,
+        minHandDetectionConfidence: 0.6,
+        minHandPresenceConfidence: 0.6,
+        minTrackingConfidence: 0.6,
+      });
+      try {
+        landmarker = await mod.HandLandmarker.createFromOptions(fileset, options('GPU'));
+      } catch (e) {
+        // 某些驱动 / 集成显卡拿不到 GPU 委托，退回 CPU，避免整个手势功能不可用
+        setStatus('GPU 委托不可用，改用 CPU 推理…');
+        landmarker = await mod.HandLandmarker.createFromOptions(fileset, options('CPU'));
+      }
+      trackerReady = true;
+      lastVideoTime = -1;
+      return;
+    } catch (e) {
+      lastErr = e;   // 换下一个 CDN 源再试
+    }
+  }
+  throw new Error('手部识别运行时加载失败：' + ((lastErr && lastErr.message) || lastErr));
+}
+
+/* ------------------------------ UI ------------------------------ */
+function setStatus(t) { const el = $('bootStatus'); if (el) el.textContent = t; }
+function showError(msg) { $('errorText').textContent = msg; $('errorCard').style.display = 'block'; }
+function hideError() { $('errorCard').style.display = 'none'; }
+
+function hideOverlay() {
+  const o = $('overlay');
+  o.style.transition = 'opacity .45s ease';
+  o.style.opacity = '0';
+  setTimeout(() => { o.style.display = 'none'; }, 460);
+}
+
+function buildLegend() {
+  $('legendBody').innerHTML = LEGEND.map(([k, v]) =>
+    '<span class="text-[#5ff0ff]">' + k + '</span><span class="text-[#9fb8cf]">' + v + '</span>'
+  ).join('');
+}
+
+function attachMouseMode() {
+  trackerReady = false;
+  $('camHint').style.display = 'grid';
+  $('camHint').innerHTML = '鼠标模式<br />拖拽旋转 / 滚轮缩放';
+  state.handCount = 0;
+}
+
+function resetAll() {
+  setShape(0, true);
+  applyTheme(0, false);
+  state.zoom = 1; state.yaw = 0; state.pitch = 0; state.roll = 0; state.demoYaw = 0;
+  state.spread = 1; state.swirl = 0.12; state.layer = 0; state.shock = 0; state.shockStart = -1;
+  camera.position.set(0, 42, 100);
+  controls.target.set(0, 0, 0);
+  controls.update();
+}
+
+function bindUI() {
+  $('btnEnable').addEventListener('click', async () => {
+    const btn = $('btnEnable');
+    btn.disabled = true;
+    try {
+      setStatus('正在请求摄像头权限…');
+      await startCamera();
+      await ensureLandmarker();
+      setStatus('就绪');
+      hideError();
+      hideOverlay();
+    } catch (e) {
+      const name = (e && e.name) || '';
+      let msg = (e && e.message) ? e.message : String(e);
+      if (name === 'NotAllowedError' || name === 'SecurityError') {
+        msg = '摄像头权限被拒绝。可在地址栏站点设置里允许摄像头后点「重试摄像头」，或先用鼠标体验。';
+      } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+        msg = '未检测到可用摄像头。可以先用鼠标体验。';
+      }
+      attachMouseMode();
+      hideOverlay();
+      showError(msg);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  $('btnSkip').addEventListener('click', () => { attachMouseMode(); hideOverlay(); });
+  $('btnErrorMouse').addEventListener('click', () => { attachMouseMode(); hideError(); hideOverlay(); });
+  $('btnCloseErr').addEventListener('click', hideError);
+  $('btnRetry').addEventListener('click', async () => {
+    try {
+      const wasMouse = !trackerReady;
+      if (wasMouse) hideOverlay();
+      await startCamera();
+      await ensureLandmarker();
+      hideError();
+      hideOverlay();
+    } catch (e) {
+      showError('重试失败：' + ((e && e.message) ? e.message : e));
+    }
+  });
+
+  $('legendToggle').addEventListener('click', () => {
+    const b = $('legendBody');
+    const isHidden = b.style.display === 'none';
+    b.style.display = isHidden ? 'grid' : 'none';
+    $('legendToggle').textContent = isHidden ? '手势图例 ▾' : '手势图例 ▸';
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+      demoPaused = !demoPaused;
+      if (demoPaused) exitDemo();
+      e.preventDefault();
+      return;
+    }
+    const k = e.key.toLowerCase();
+    if (k >= '1' && k <= '5') {
+      setShape(parseInt(k, 10) - 1);
+      exitDemo();
+      return;
+    }
+    switch (k) {
+      case 'g': bloomPass.enabled = !bloomPass.enabled; break;
+      case 't': afterImagePass.enabled = !afterImagePass.enabled; break;
+      case 'h': $('hud').classList.toggle('hud-off'); break;
+      case 'c': $('btnRetry').click(); break;
+      case 'r': resetAll(); exitDemo(); break;
+      default: break;
+    }
+  });
+}
+
+/* ------------------------------ 入口 ------------------------------ */
+boot().catch((err) => {
+  setStatus('初始化失败');
+  const msg = (err && err.message) ? err.message : String(err);
+  const hint = location.protocol === 'file:'
+    ? '（当前以 file:// 打开。若资源加载失败，请在该目录执行 python -m http.server 8000，再访问 http://localhost:8000/index.html）'
+    : '';
+  showError('资源初始化失败：' + msg + hint);
+  attachMouseMode();
+});
+</script>
+</body>
+</html>

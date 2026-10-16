@@ -1,0 +1,10 @@
+{
+  // 部署配置：只发布 dist/（index.html + hand_landmarker.task），绝不要把仓库根目录当站点上传，
+  // 否则会连 .git/ 一起发布出去。
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nebula-ctrl",
+  "compatibility_date": "2026-10-12",
+  "assets": {
+    "directory": "./dist"
+  }
+}
